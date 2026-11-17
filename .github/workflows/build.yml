@@ -12,7 +12,7 @@ env:
 
 jobs:
   mac:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Configure (universal x86_64 + arm64)

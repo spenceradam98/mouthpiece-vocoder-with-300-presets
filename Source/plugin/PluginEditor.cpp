@@ -806,7 +806,8 @@ void MouthpieceEditor::saveUserPreset()
     saveDialog->addTextEditor ("name", suggestion);
     saveDialog->addButton ("Save", 1, KeyPress (KeyPress::returnKey));
     saveDialog->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
-    saveDialog->enterModalState (true, ModalCallbackFunction::create ([this] (int result)
+    Component::SafePointer<MouthpieceEditor> safeThis (this);
+    saveDialog->enterModalState (true, ModalCallbackFunction::create ([this, safeThis] (int result)
     {
         if (result == 1 && saveDialog != nullptr)
         {
@@ -815,6 +816,6 @@ void MouthpieceEditor::saveUserPreset()
             if (! proc.saveUserPreset (name, error))
                 AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Could not save preset", error);
         }
-        MessageManager::callAsync ([sp = Component::SafePointer<MouthpieceEditor> (this)] { if (sp != nullptr) sp->saveDialog.reset(); });
+        MessageManager::callAsync ([sp = safeThis] { if (sp != nullptr) sp->saveDialog.reset(); });
     }), false);
 }
