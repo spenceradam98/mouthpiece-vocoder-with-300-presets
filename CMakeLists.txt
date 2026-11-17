@@ -54,11 +54,16 @@ endif()
 
 # An effect (the voice comes in on the main input) that also takes MIDI to play the carrier synth,
 # with an optional sidechain bus for an external carrier or modulator.
+set(MOUTHPIECE_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND MOUTHPIECE_FORMATS AU)
+endif()
+
 juce_add_plugin(Mouthpiece
     COMPANY_NAME "MouthpieceAudio"
     PLUGIN_MANUFACTURER_CODE Mthp
     PLUGIN_CODE Mpv1
-    FORMATS VST3 Standalone
+    FORMATS ${MOUTHPIECE_FORMATS}
     PRODUCT_NAME "Mouthpiece"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
@@ -66,22 +71,29 @@ juce_add_plugin(Mouthpiece
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE
     COPY_PLUGIN_AFTER_BUILD FALSE
-    VST3_CATEGORIES Fx Vocals)
+    VST3_CATEGORIES Fx Vocals
+    AU_MAIN_TYPE kAudioUnitType_MusicEffect)
 
 target_sources(Mouthpiece PRIVATE
     Source/plugin/PluginProcessor.cpp
-    Source/plugin/PluginEditor.cpp)
+    Source/plugin/PluginEditor.cpp
+    Source/plugin/HostedCarrier.cpp)
 
 target_compile_definitions(Mouthpiece PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
-    JUCE_DISPLAY_SPLASH_SCREEN=0)
+    JUCE_DISPLAY_SPLASH_SCREEN=0
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_AU=1
+    JUCE_PLUGINHOST_LADSPA=0
+    JUCE_PLUGINHOST_LV2=0)
 
 target_link_libraries(Mouthpiece
     PRIVATE
         mouthpiece_engine
         juce::juce_audio_utils
+        juce::juce_audio_processors
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
@@ -94,8 +106,10 @@ if(MOUTHPIECE_BUILD_SCREENSHOT)
     target_sources(mouthpiece_screenshot PRIVATE
         tools/Screenshot.cpp
         Source/plugin/PluginProcessor.cpp
-        Source/plugin/PluginEditor.cpp)
+        Source/plugin/PluginEditor.cpp
+        Source/plugin/HostedCarrier.cpp)
     target_compile_definitions(mouthpiece_screenshot PRIVATE
+        JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0
         JucePlugin_Name="Mouthpiece"
         JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_WEB_BROWSER=0
@@ -104,4 +118,31 @@ if(MOUTHPIECE_BUILD_SCREENSHOT)
         mouthpiece_engine
         juce::juce_audio_utils
         juce::juce_recommended_config_flags)
+endif()
+
+# ---- Optional: carrier plugin slot test (a tiny test instrument + a host that loads it into Mouthpiece) ----
+option(MOUTHPIECE_BUILD_TOOLS "Build the plugin-slot test" OFF)
+if(MOUTHPIECE_BUILD_TOOLS)
+    juce_add_plugin(TestSaw
+        COMPANY_NAME "MouthpieceAudio"
+        PLUGIN_MANUFACTURER_CODE Mthp
+        PLUGIN_CODE Tsaw
+        PRODUCT_NAME "TestSaw"
+        FORMATS VST3
+        IS_SYNTH TRUE NEEDS_MIDI_INPUT TRUE)
+    target_sources(TestSaw PRIVATE tools/TestSine.cpp)
+    target_compile_definitions(TestSaw PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
+    target_link_libraries(TestSaw PRIVATE juce::juce_audio_utils PUBLIC juce::juce_recommended_config_flags)
+
+    juce_add_console_app(mouthpiece_host_test PRODUCT_NAME "mouthpiece_host_test")
+    target_sources(mouthpiece_host_test PRIVATE tools/HostTest.cpp
+        Source/plugin/PluginProcessor.cpp Source/plugin/PluginEditor.cpp Source/plugin/HostedCarrier.cpp)
+    target_compile_definitions(mouthpiece_host_test PRIVATE JucePlugin_Name="Mouthpiece" JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+        JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0)
+    target_link_libraries(mouthpiece_host_test PRIVATE mouthpiece_engine juce::juce_audio_utils juce::juce_audio_processors
+        PUBLIC juce::juce_recommended_config_flags)
+    add_dependencies(mouthpiece_host_test TestSaw_VST3)
+    enable_testing()
+    add_test(NAME host COMMAND mouthpiece_host_test
+        "$<TARGET_FILE_DIR:TestSaw_VST3>/../../../TestSaw.vst3")
 endif()

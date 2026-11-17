@@ -70,7 +70,9 @@ bool MouthpieceProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 void MouthpieceProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     const auto n = (size_t) juce::jmax (1, samplesPerBlock);
-    mono.assign (n, 0.0f); side.assign (n, 0.0f); outL.assign (n, 0.0f); outR.assign (n, 0.0f);
+    mono.assign (n, 0.0f); side.assign (n, 0.0f); outL.assign (n, 0.0f); outR.assign (n, 0.0f); hostMono.assign (n, 0.0f);
+    hostOut.setSize (2, (int) n);
+    hosted.prepare (sampleRate, samplesPerBlock);
     events.reserve (512);
     engine.setParams (readParams());
     engine.prepare (sampleRate, samplesPerBlock);
@@ -92,6 +94,8 @@ void MouthpieceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     if ((int) mono.size() < n)   // hosts may exceed the announced block size
     {
         mono.resize ((size_t) n); side.resize ((size_t) n); outL.resize ((size_t) n); outR.resize ((size_t) n);
+        hostMono.resize ((size_t) n);
+        hostOut.setSize (2, n, false, false, true);
     }
 
     keyboardState.processNextMidiBuffer (midi, 0, n, true);
@@ -141,6 +145,16 @@ void MouthpieceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const bool modFromSide = (int) p[mp::kModSource] == mp::ModSidechain;
     const float* mod = modFromSide ? side.data() : mono.data();
     const float* ext = modFromSide ? mono.data() : side.data();
+    if ((int) std::lround (p[mp::kCarrier]) == mp::CarPlugin)
+    {
+        // the hosted plugin plays the MIDI (instrument) or processes the external input (effect); its output is the carrier
+        juce::AudioBuffer<float> hb (hostOut.getArrayOfWritePointers(), 2, n);
+        if (hosted.render (ext, hb, midi, n))
+            for (int i = 0; i < n; ++i) hostMono[(size_t) i] = 0.5f * (hb.getSample (0, i) + hb.getSample (1, i));
+        else
+            std::fill (hostMono.begin(), hostMono.begin() + n, 0.0f);
+        ext = hostMono.data();
+    }
     engine.process (mod, ext, outL.data(), outR.data(), n, events.data(), (int) events.size());
 
     const int outCh = getMainBusNumOutputChannels();
@@ -168,6 +182,7 @@ void MouthpieceProcessor::setCurrentProgram (int index)
 {
     if (! juce::isPositiveAndBelow (index, mp::numPresets())) return;
     currentProgram = index;
+    userPresetName.clear();
     const auto p = mp::presetParams (index);
     for (int i = 0; i < mp::kNumParams; ++i)
         if (auto* prm = apvts.getParameter (mp::paramDefs()[i].id))
@@ -180,7 +195,12 @@ void MouthpieceProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty ("program", currentProgram, nullptr);
     state.setProperty ("theme", theme.load(), nullptr);
-    if (auto xml = state.createXml()) copyXmlToBinary (*xml, destData);
+    state.setProperty ("userPreset", userPresetName, nullptr);
+    if (auto xml = state.createXml())
+    {
+        xml->addChildElement (hosted.toXml().release());
+        copyXmlToBinary (*xml, destData);
+    }
 }
 
 void MouthpieceProcessor::setStateInformation (const void* data, int sizeInBytes)
@@ -188,12 +208,67 @@ void MouthpieceProcessor::setStateInformation (const void* data, int sizeInBytes
     if (auto xml = getXmlFromBinary (data, sizeInBytes))
         if (xml->hasTagName (apvts.state.getType()))
         {
+            if (auto* h = xml->getChildByName ("HOSTED"))
+            {
+                hosted.fromXml (*h);
+                xml->removeChildElement (h, true);
+            }
             auto tree = juce::ValueTree::fromXml (*xml);
             currentProgram = tree.getProperty ("program", 0);
             theme.store ((int) tree.getProperty ("theme", 0));
+            userPresetName = tree.getProperty ("userPreset", "").toString();
             apvts.replaceState (tree);
             programChanged.fetch_add (1);
         }
+}
+
+juce::File MouthpieceProcessor::getUserPresetFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Mouthpiece").getChildFile ("Presets");
+}
+
+juce::Array<juce::File> MouthpieceProcessor::getUserPresets() const
+{
+    auto files = getUserPresetFolder().findChildFiles (juce::File::findFiles, false, "*.mppreset");
+    std::sort (files.begin(), files.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getFileNameWithoutExtension().compareIgnoreCase (b.getFileNameWithoutExtension()) < 0; });
+    return files;
+}
+
+bool MouthpieceProcessor::saveUserPreset (const juce::String& rawName, juce::String& error)
+{
+    const auto name = juce::File::createLegalFileName (rawName.trim());
+    if (name.isEmpty()) { error = "Please enter a name"; return false; }
+    juce::XmlElement xml ("MouthpiecePreset");
+    xml.setAttribute ("name", rawName.trim());
+    xml.setAttribute ("version", 1);
+    for (int i = 0; i < mp::kNumParams; ++i)
+        xml.setAttribute (mp::paramDefs()[i].id, (double) raw[(size_t) i]->load());
+    auto folder = getUserPresetFolder();
+    if (! folder.createDirectory()) { error = "Could not create " + folder.getFullPathName(); return false; }
+    auto file = folder.getChildFile (name + ".mppreset");
+    if (! xml.writeTo (file)) { error = "Could not write " + file.getFullPathName(); return false; }
+    userPresetName = file.getFileNameWithoutExtension();
+    programChanged.fetch_add (1);
+    return true;
+}
+
+bool MouthpieceProcessor::loadUserPreset (const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName ("MouthpiecePreset")) return false;
+    auto p = mp::defaultParams();   // keys missing from older files fall back to defaults
+    for (int i = 0; i < mp::kNumParams; ++i)
+    {
+        const auto& d = mp::paramDefs()[i];
+        p[(size_t) i] = juce::jlimit (d.min, d.max, (float) xml->getDoubleAttribute (d.id, d.def));
+    }
+    for (int i = 0; i < mp::kNumParams; ++i)
+        if (auto* prm = apvts.getParameter (mp::paramDefs()[i].id))
+            prm->setValueNotifyingHost (prm->convertTo0to1 (p[(size_t) i]));
+    userPresetName = file.getFileNameWithoutExtension();
+    programChanged.fetch_add (1);
+    return true;
 }
 
 juce::AudioProcessorEditor* MouthpieceProcessor::createEditor() { return new MouthpieceEditor (*this); }

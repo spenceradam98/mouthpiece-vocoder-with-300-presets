@@ -131,7 +131,7 @@ void Engine::setParams (const Params& p)
     auto f = [&] (int id) { return p[(size_t) id]; };
 
     type = std::max (0, std::min (kNumTypes - 1, i (kType)));
-    carrier = std::max (0, std::min (4, i (kCarrier)));
+    carrier = std::max (0, std::min ((int) CarPlugin, i (kCarrier)));
     modGain = dbToGain (f (kModGain));
     gateThresh = f (kGate) <= -89.0f ? 0.0f : dbToGain (f (kGate));
     mixWet = f (kMix);
@@ -267,7 +267,8 @@ float Engine::renderSample (float mRaw, float ext, float& l, float& r)
     switch (carrier)
     {
         case CarNoise: c = rng.white() * 0.5f; break;
-        case CarExternal: c = extDc.process (ext); break;
+        case CarExternal:
+        case CarPlugin: c = extDc.process (ext); break;
         default: c = synth.process(); break;
     }
     const float lo = toneLp.process (c);

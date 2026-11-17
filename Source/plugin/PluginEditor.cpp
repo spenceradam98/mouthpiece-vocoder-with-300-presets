@@ -163,6 +163,63 @@ void MouthpieceLookAndFeel::drawComboBox (Graphics& g, int w, int h, bool, int, 
     g.fillPath (arrow);
 }
 
+// ============================================================================ hosted plugin windows
+class MouthpieceEditor::PluginWindow : public DocumentWindow
+{
+public:
+    PluginWindow (AudioProcessor& p, std::function<void()> onClose)
+        : DocumentWindow (p.getName(), Colours::darkgrey, DocumentWindow::closeButton), processor (p), closed (std::move (onClose))
+    {
+        setUsingNativeTitleBar (true);
+        if (auto* ed = p.createEditorIfNeeded()) setContentNonOwned (ed, true);
+        else setContentOwned (new GenericAudioProcessorEditor (p), true);
+        auto* ed = dynamic_cast<AudioProcessorEditor*> (getContentComponent());
+        setResizable (ed != nullptr && ed->isResizable(), false);
+        centreWithSize (getWidth(), getHeight());
+        setVisible (true);
+        setAlwaysOnTop (true);
+    }
+    ~PluginWindow() override
+    {
+        if (auto* ed = dynamic_cast<AudioProcessorEditor*> (getContentComponent()))
+        {
+            if (dynamic_cast<GenericAudioProcessorEditor*> (ed) == nullptr)
+            {
+                processor.editorBeingDeleted (ed);
+                clearContentComponent();
+                delete ed;
+            }
+        }
+    }
+    void closeButtonPressed() override { MessageManager::callAsync (closed); }
+    AudioProcessor& processor;
+
+private:
+    std::function<void()> closed;
+};
+
+class MouthpieceEditor::ScannerWindow : public DocumentWindow
+{
+public:
+    ScannerWindow (HostedCarrier& h, std::function<void()> onClose)
+        : DocumentWindow ("Plugins", Colours::darkgrey, DocumentWindow::closeButton), hosted (h), closed (std::move (onClose))
+    {
+        setUsingNativeTitleBar (true);
+        auto* list = new PluginListComponent (hosted.formatManager, hosted.knownPlugins, hosted.getDeadMansPedalFile(), nullptr, false);
+        list->setSize (640, 480);
+        setContentOwned (list, true);
+        setResizable (true, false);
+        centreWithSize (640, 480);
+        setVisible (true);
+        setAlwaysOnTop (true);
+    }
+    void closeButtonPressed() override { hosted.saveKnownPlugins(); MessageManager::callAsync (closed); }
+
+private:
+    HostedCarrier& hosted;
+    std::function<void()> closed;
+};
+
 // ============================================================================ Editor
 MouthpieceEditor::MouthpieceEditor (MouthpieceProcessor& p)
     : AudioProcessorEditor (&p), proc (p), keyboard (p.keyboardState, MidiKeyboardComponent::horizontalKeyboard)
@@ -175,8 +232,18 @@ MouthpieceEditor::MouthpieceEditor (MouthpieceProcessor& p)
     int nc = 0;
     const auto* cats = presetCategories (nc);
     for (int i = 0; i < nc; ++i) categoryBox.addItem (cats[i].name, i + 1);
+    categoryBox.addSeparator();
+    categoryBox.addItem ("User", kUserCategoryId);
     categoryBox.onChange = [this]
     {
+        if (categoryBox.getSelectedId() == kUserCategoryId)
+        {
+            // list the user's presets; load the first if the current sound isn't one of them
+            userFiles = proc.getUserPresets();
+            if (proc.getUserPresetName().isEmpty() && ! userFiles.isEmpty()) proc.loadUserPreset (userFiles.getFirst());
+            else refreshPresetBoxes();
+            return;
+        }
         // picking a category loads its first preset
         int n = 0;
         const auto* defs = presetDefs (n);
@@ -189,13 +256,25 @@ MouthpieceEditor::MouthpieceEditor (MouthpieceProcessor& p)
     presetBox.onChange = [this]
     {
         const int id = presetBox.getSelectedId();
-        if (id > 0 && id - 1 != proc.getCurrentProgram()) proc.setCurrentProgram (id - 1);
+        if (id >= kUserPresetIdBase)
+        {
+            const int i = id - kUserPresetIdBase;
+            if (isPositiveAndBelow (i, userFiles.size()) && userFiles[i].getFileNameWithoutExtension() != proc.getUserPresetName())
+                proc.loadUserPreset (userFiles[i]);
+            return;
+        }
+        if (id > 0 && (id - 1 != proc.getCurrentProgram() || proc.getUserPresetName().isNotEmpty())) proc.setCurrentProgram (id - 1);
     };
     for (int i = 0; i < kNumThemes; ++i) themeBox.addItem (kThemes[i].name, i + 1);
     themeBox.onChange = [this] { applyTheme (themeBox.getSelectedId() - 1); };
     prevButton.onClick = [this] { stepPreset (-1); };
     nextButton.onClick = [this] { stepPreset (1); };
-    for (auto* c : { (Component*) &categoryBox, (Component*) &presetBox, (Component*) &themeBox, (Component*) &prevButton, (Component*) &nextButton })
+    saveButton.onClick = [this] { saveUserPreset(); };
+    saveButton.setTooltip ("Save the current sound as a user preset");
+    pluginButton.onClick = [this] { showPluginMenu(); };
+    pluginButton.setTooltip ("Load a VST3/AU instrument or effect as the carrier");
+    for (auto* c : { (Component*) &categoryBox, (Component*) &presetBox, (Component*) &themeBox, (Component*) &prevButton, (Component*) &nextButton,
+                     (Component*) &saveButton, (Component*) &pluginButton })
         content.addAndMakeVisible (c);
 
     // input
@@ -232,6 +311,9 @@ MouthpieceEditor::MouthpieceEditor (MouthpieceProcessor& p)
 
 MouthpieceEditor::~MouthpieceEditor()
 {
+    pluginWindow.reset();
+    if (scannerWindow != nullptr) { proc.hosted.saveKnownPlugins(); scannerWindow.reset(); }
+    saveDialog.reset();
     setLookAndFeel (nullptr);
 }
 
@@ -280,6 +362,20 @@ void MouthpieceEditor::applyTheme (int index)
 
 void MouthpieceEditor::refreshPresetBoxes()
 {
+    if (proc.getUserPresetName().isNotEmpty() || categoryBox.getSelectedId() == kUserCategoryId)
+    {
+        userFiles = proc.getUserPresets();
+        categoryBox.setSelectedId (kUserCategoryId, dontSendNotification);
+        presetBox.clear (dontSendNotification);
+        if (userFiles.isEmpty()) presetBox.addItem ("(no user presets yet: press SAVE)", -1);
+        for (int i = 0; i < userFiles.size(); ++i)
+        {
+            presetBox.addItem (userFiles[i].getFileNameWithoutExtension(), kUserPresetIdBase + i);
+            if (userFiles[i].getFileNameWithoutExtension() == proc.getUserPresetName())
+                presetBox.setSelectedId (kUserPresetIdBase + i, dontSendNotification);
+        }
+        return;
+    }
     int n = 0;
     const auto* defs = mp::presetDefs (n);
     const int cur = jlimit (0, n - 1, proc.getCurrentProgram());
@@ -293,6 +389,15 @@ void MouthpieceEditor::refreshPresetBoxes()
 
 void MouthpieceEditor::stepPreset (int delta)
 {
+    if (proc.getUserPresetName().isNotEmpty())
+    {
+        userFiles = proc.getUserPresets();
+        int cur = 0;
+        for (int i = 0; i < userFiles.size(); ++i)
+            if (userFiles[i].getFileNameWithoutExtension() == proc.getUserPresetName()) cur = i;
+        if (! userFiles.isEmpty()) proc.loadUserPreset (userFiles[((cur + delta) % userFiles.size() + userFiles.size()) % userFiles.size()]);
+        return;
+    }
     const int n = mp::numPresets();
     proc.setCurrentProgram (((proc.getCurrentProgram() + delta) % n + n) % n);
 }
@@ -316,10 +421,12 @@ void MouthpieceEditor::resized()
 
     using namespace mp;
     headerArea = { 0, 0, W, 54 };
-    prevButton.setBounds (300, 13, 28, 28);
-    categoryBox.setBounds (334, 13, 190, 28);
-    presetBox.setBounds (530, 13, 260, 28);
-    nextButton.setBounds (796, 13, 28, 28);
+    prevButton.setBounds (276, 13, 28, 28);
+    categoryBox.setBounds (308, 13, 176, 28);
+    presetBox.setBounds (488, 13, 236, 28);
+    nextButton.setBounds (728, 13, 28, 28);
+    saveButton.setBounds (762, 13, 52, 28);
+    pluginButton.setBounds (874, 13, 182, 28);
     themeBox.setBounds (W - 176, 13, 160, 28);
 
     displayArea = { 16, 62, W - 32, 150 };
@@ -409,7 +516,8 @@ void MouthpieceEditor::paintContent (Graphics& g)
     g.drawText ("VOCODER", 200, 22, 90, 14, Justification::centredLeft);
     g.setColour (t.textDim);
     g.setFont (FontOptions (11.0f));
-    g.drawText (String (proc.getCurrentProgram() + 1) + " / " + String (mp::numPresets()), 830, 13, 70, 28, Justification::centredLeft);
+    g.drawText (proc.getUserPresetName().isNotEmpty() ? String ("user") : String (proc.getCurrentProgram() + 1) + " / " + String (mp::numPresets()),
+                818, 13, 56, 28, Justification::centredLeft);
 
     drawDisplay (g, displayArea.toFloat());
 
@@ -570,6 +678,9 @@ String MouthpieceEditor::statusText() const
         case CarExternal:
             if (v (kModSource) == ModSidechain) return "Carrier: main input, voice on sidechain";
             return proc.sidechainActive() ? "Carrier: sidechain input" : "Carrier is External: route a synth or track to the sidechain";
+        case CarPlugin:
+            if (proc.hosted.getPlugin() == nullptr) return "Carrier is Plugin: load one with the plugin button above";
+            return "Carrier: " + proc.hosted.getName() + (proc.hosted.getPlugin()->acceptsMidi() ? " (play MIDI)" : " (processing the sidechain)");
         default: return {};
     }
 }
@@ -599,6 +710,8 @@ void MouthpieceEditor::timerCallback()
         if (themeBox.getSelectedId() != proc.theme.load() + 1) applyTheme (proc.theme.load());
     }
 
+    pluginButton.setButtonText (pluginButtonText());
+
     // dim controls that the current mode ignores
     using namespace mp;
     auto v = [this] (int id) { return (int) proc.apvts.getRawParameterValue (paramDefs()[id].id)->load(); };
@@ -617,4 +730,91 @@ void MouthpieceEditor::timerCallback()
 
     content.repaint (displayArea);
     content.repaint (headerArea);
+}
+
+// ============================================================================ plugin slot and user presets
+String MouthpieceEditor::pluginButtonText() const
+{
+    const auto name = proc.hosted.getName();
+    return name.isEmpty() ? String ("Load carrier plugin...") : "Plugin: " + name;
+}
+
+void MouthpieceEditor::showPluginMenu()
+{
+    auto types = proc.hosted.knownPlugins.getTypes();
+    PopupMenu m;
+    const bool loaded = proc.hosted.getPlugin() != nullptr;
+    if (loaded)
+    {
+        m.addSectionHeader (proc.hosted.getName());
+        m.addItem ("Open plugin window", [this] { openPluginWindow(); });
+        m.addItem ("Remove plugin", [this]
+        {
+            closePluginWindow();
+            proc.hosted.unload();
+        });
+        m.addSeparator();
+    }
+    if (types.isEmpty())
+        m.addItem ("No plugins found yet. Scan for plugins...", [this] { openScanner(); });
+    else
+    {
+        PopupMenu list;
+        KnownPluginList::addToMenu (list, types, KnownPluginList::sortByCategory);
+        m.addSubMenu (loaded ? "Replace with" : "Load", list);
+        m.addSeparator();
+        m.addItem ("Scan for plugins...", [this] { openScanner(); });
+    }
+    m.showMenuAsync (PopupMenu::Options().withTargetComponent (&pluginButton), [this, types] (int result)
+    {
+        const int idx = KnownPluginList::getIndexChosenByMenu (types, result);
+        if (! isPositiveAndBelow (idx, types.size())) return;
+        closePluginWindow();
+        String error;
+        if (! proc.hosted.load (types.getReference (idx), error))
+        {
+            AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Could not load plugin", error);
+            return;
+        }
+        // switch the carrier to the plugin and show its window
+        if (auto* prm = proc.apvts.getParameter (mp::paramDefs()[mp::kCarrier].id))
+            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) mp::CarPlugin));
+        openPluginWindow();
+    });
+}
+
+void MouthpieceEditor::openPluginWindow()
+{
+    auto* p = proc.hosted.getPlugin();
+    if (p == nullptr) return;
+    if (pluginWindow != nullptr) { pluginWindow->toFront (true); return; }
+    pluginWindow = std::make_unique<PluginWindow> (*p, [this] { closePluginWindow(); });
+}
+
+void MouthpieceEditor::closePluginWindow() { pluginWindow.reset(); }
+
+void MouthpieceEditor::openScanner()
+{
+    if (scannerWindow != nullptr) { scannerWindow->toFront (true); return; }
+    scannerWindow = std::make_unique<ScannerWindow> (proc.hosted, [this] { scannerWindow.reset(); });
+}
+
+void MouthpieceEditor::saveUserPreset()
+{
+    saveDialog = std::make_unique<AlertWindow> ("Save preset", "Name for this preset (saved in Documents/Mouthpiece/Presets):", MessageBoxIconType::NoIcon);
+    const String suggestion = proc.getUserPresetName().isNotEmpty() ? proc.getUserPresetName() : presetBox.getText() + " (mine)";
+    saveDialog->addTextEditor ("name", suggestion);
+    saveDialog->addButton ("Save", 1, KeyPress (KeyPress::returnKey));
+    saveDialog->addButton ("Cancel", 0, KeyPress (KeyPress::escapeKey));
+    saveDialog->enterModalState (true, ModalCallbackFunction::create ([this] (int result)
+    {
+        if (result == 1 && saveDialog != nullptr)
+        {
+            String error;
+            const auto name = saveDialog->getTextEditorContents ("name");
+            if (! proc.saveUserPreset (name, error))
+                AlertWindow::showMessageBoxAsync (MessageBoxIconType::WarningIcon, "Could not save preset", error);
+        }
+        MessageManager::callAsync ([sp = Component::SafePointer<MouthpieceEditor> (this)] { if (sp != nullptr) sp->saveDialog.reset(); });
+    }), false);
 }

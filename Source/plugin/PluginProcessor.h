@@ -4,6 +4,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include "Engine.h"
 #include "Presets.h"
+#include "HostedCarrier.h"
 
 class MouthpieceProcessor : public juce::AudioProcessor
 {
@@ -12,7 +13,7 @@ public:
     ~MouthpieceProcessor() override = default;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override { hosted.release(); }
     bool isBusesLayoutSupported (const BusesLayout&) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     using AudioProcessor::processBlock;
@@ -45,12 +46,25 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    // carrier plugin slot (Carrier = Plugin)
+    HostedCarrier hosted;
+
+    // user presets: one .mppreset XML file per preset in Documents/Mouthpiece/Presets
+    static juce::File getUserPresetFolder();
+    juce::Array<juce::File> getUserPresets() const;
+    bool saveUserPreset (const juce::String& name, juce::String& error);
+    bool loadUserPreset (const juce::File&);
+    juce::String getUserPresetName() const { return userPresetName; }
+
 private:
     mp::Params readParams() const;
 
     mp::Engine engine;
     std::vector<float> mono, side, outL, outR;
     std::vector<mp::NoteEvent> events;
+    juce::AudioBuffer<float> hostOut;
+    std::vector<float> hostMono;
+    juce::String userPresetName;   // non-empty while a user preset is the current sound
     std::array<std::atomic<float>*, mp::kNumParams> raw {};
     std::atomic<bool> sidechainOn { false };
     int currentProgram = 0;

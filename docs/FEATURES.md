@@ -28,6 +28,9 @@ unvoiced so consonants stay clear), **Robot** (sample-and-hold of the envelopes,
   - **Noise**: whisper vocoding.
   - **External**: the other input (sidechain, or main input when the voice is on the sidechain), so any
     plugin, synth, guitar or drum track can be the carrier.
+  - **Plugin**: a VST3 (or AU on macOS) loaded into Mouthpiece's own carrier slot. Instruments receive the
+    MIDI; effects process the external input. Scan / load / replace / open window / remove from the header
+    button; the plugin and its state are saved with the session. Built on the hosting code from Scope.
 - **Chord** (16 types, including scale-aware triads and sevenths) applies to MIDI notes too: one key plays a
   whole chord. **Octave**, **Key**, **Scale** (9 scales).
 
@@ -65,9 +68,19 @@ VST3 and standalone. macOS 11+ universal, Windows (static runtime). Scalar C++ o
 one core at 48 kHz with worst-case settings (40 bands, 7-voice unison, 4-note chord, ensemble and space on):
 about 3 to 5 percent on the build machine.
 
-## Not in this first version
+## User presets
 
-- AU format (easy to add to `FORMATS` on macOS if wanted).
-- User preset saving inside the plugin (the DAW saves full state; "Save preset" would be a small addition).
-- A dedicated hosting slot for loading another VST inside Mouthpiece (today an external plugin is used as the
-  carrier through the DAW's sidechain routing). Scope already hosts plugins, so that code could be reused.
+SAVE stores every parameter in `Documents/Mouthpiece/Presets/<name>.mppreset` (plain XML). The **User**
+category in the preset menu lists them; previous/next step through them while one is loaded. Files from
+future versions with extra parameters still load (missing values fall back to defaults).
+
+## Formats
+
+VST3 + standalone on macOS and Windows, plus AU (`kAudioUnitType_MusicEffect`, so it accepts MIDI) on macOS.
+
+## Tests
+
+`ctest` runs the engine tests (presets, formant transfer for every engine, levels, gate, pitch tracking,
+chords, latency, odd sample rates, every preset rendered). With `-DMOUTHPIECE_BUILD_TOOLS=ON` it also runs a
+host test that loads a test instrument VST3 into the carrier slot, vocodes it, restores it from saved
+session state, and round-trips a user preset.

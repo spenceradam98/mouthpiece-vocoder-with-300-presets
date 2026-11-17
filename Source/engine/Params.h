@@ -36,7 +36,7 @@ enum P : int
 };
 
 enum Type { TypeClassic, TypeVintage, TypeSpectral, TypeTalkbox, kNumTypes };
-enum Carrier { CarSynth, CarAutoPitch, CarDrone, CarNoise, CarExternal };
+enum Carrier { CarSynth, CarAutoPitch, CarDrone, CarNoise, CarExternal, CarPlugin };   // Plugin: a hosted instrument/effect feeds `ext`
 enum ModSource { ModMain, ModSidechain };
 enum Wave { WSaw, WSquare, WPulse, WTriangle, WSine, WBuzz };
 
@@ -61,7 +61,7 @@ inline const ParamDef* paramDefs()
         { "modGain",   "Input Gain",     Kind::Float,  -24, 24, 0, 0, nullptr, "dB" },
         { "gate",      "Gate",           Kind::Float,  -90, -20, -70, 0, nullptr, "dB" },
 
-        { "carrier",   "Carrier",        Kind::Choice, 0, 4, 0, 0, "Synth (MIDI)|Auto Pitch|Drone|Noise|External", "" },
+        { "carrier",   "Carrier",        Kind::Choice, 0, 5, 0, 0, "Synth (MIDI)|Auto Pitch|Drone|Noise|External|Plugin", "" },
         { "key",       "Key",            Kind::Choice, 0, 11, 0, 0, "C|C#|D|D#|E|F|F#|G|G#|A|A#|B", "" },
         { "scale",     "Scale",          Kind::Choice, 0, 8, 0, 0, "Chromatic|Major|Minor|Dorian|Mixolydian|Pentatonic|Minor Pent|Harmonic Minor|Blues", "" },
         { "chord",     "Chord",          Kind::Choice, 0, 15, 0, 0,

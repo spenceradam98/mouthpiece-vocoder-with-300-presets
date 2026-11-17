@@ -3,7 +3,8 @@
 A vocoder plugin (VST3 + standalone) with four vocoder engines, a built-in carrier synth, 313 factory
 presets in 13 categories and four UI themes. Your voice (a microphone, a vocal track or any audio) is the
 modulator; the carrier can be the built-in synth played from MIDI, a synth that follows your own pitch,
-a drone chord, noise, or another track/plugin routed in on the sidechain. See `docs/FEATURES.md`.
+a drone chord, noise, another track routed in on the sidechain, or a synth plugin loaded into
+Mouthpiece's own carrier slot. See `docs/FEATURES.md`.
 
 ![Studio Night theme](docs/screenshots/theme-studio-night.png)
 
@@ -22,7 +23,13 @@ ctest --test-dir build                                # engine tests
 macOS builds target macOS 11+ universal (Intel + Apple Silicon). No AVX2 or other `-march` flags are
 used; the DSP is scalar C++. Windows builds use the static runtime.
 
-Extras: `mouthpiece_render_demo voice.wav out.wav [preset names...]` renders a demo reel from any 16-bit
+**User presets.** Press **SAVE** to store the current sound; it appears under the **User** category
+(files live in `Documents/Mouthpiece/Presets/*.mppreset`, easy to back up or share).
+
+Formats: VST3 and standalone everywhere, plus AU on macOS.
+
+Extras: `-DMOUTHPIECE_BUILD_TOOLS=ON` adds a tiny test instrument and `ctest` then also checks the carrier
+plugin slot and user presets end to end. `mouthpiece_render_demo voice.wav out.wav [preset names...]` renders a demo reel from any 16-bit
 WAV. `-DMOUTHPIECE_BUILD_SCREENSHOT=ON` builds `mouthpiece_screenshot`, which writes a PNG of the editor
 in every theme.
 
@@ -36,7 +43,12 @@ track or keyboard to it to play the carrier synth (in Ableton Live: a MIDI track
 vocal track's Mouthpiece; in Reaper and Cubase: send MIDI to the plugin directly). No MIDI? Pick a preset
 from **Auto Harmony** (the carrier follows the pitch you sing) or **Drones & Pads** (a held chord).
 
-**Another plugin or track as the carrier.** Enable the plugin's sidechain input and route the synth,
+**A synth plugin as the carrier (built-in slot).** Click **Load carrier plugin...** in the header,
+scan once, and pick any VST3 (or AU on macOS) instrument. Mouthpiece switches Carrier to **Plugin**, sends
+your MIDI to it and vocodes its output; the plugin window opens from the same button. An effect plugin in the
+slot processes the sidechain input instead. The plugin and its settings are saved with your session.
+
+**Another track as the carrier.** Enable the plugin's sidechain input and route the synth,
 guitar or pad track to it, then set Carrier to **External** (the **External Carrier** category). Set
 Modulator Input to **Sidechain** to flip it: the voice arrives on the sidechain and the main input is the
 carrier.

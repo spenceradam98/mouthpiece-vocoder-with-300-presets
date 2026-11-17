@@ -22,6 +22,7 @@ public:
     void drawComboBox (juce::Graphics&, int w, int h, bool down, int bx, int by, int bw, int bh, juce::ComboBox&) override;
     juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (juce::FontOptions (13.0f)); }
     juce::Font getPopupMenuFont() override { return juce::Font (juce::FontOptions (14.0f)); }
+    juce::Font getTextButtonFont (juce::TextButton&, int) override { return juce::Font (juce::FontOptions (13.0f, juce::Font::bold)); }
     Theme theme {};
 };
 
@@ -30,6 +31,7 @@ class MouthpieceEditor : public juce::AudioProcessorEditor, private juce::Timer
 public:
     explicit MouthpieceEditor (MouthpieceProcessor&);
     ~MouthpieceEditor() override;
+    juce::String pluginButtonText() const;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -57,7 +59,15 @@ private:
     };
     struct Panel { juce::String title; juce::Rectangle<int> area; };
 
+    class PluginWindow;
+    class ScannerWindow;
+
     void timerCallback() override;
+    void showPluginMenu();
+    void openPluginWindow();
+    void closePluginWindow();
+    void openScanner();
+    void saveUserPreset();
     void paintContent (juce::Graphics&);
     void drawDisplay (juce::Graphics&, juce::Rectangle<float>);
     void drawMeter (juce::Graphics&, juce::Rectangle<float>, float level, const juce::String& label);
@@ -81,7 +91,11 @@ private:
     juce::ToggleButton freeze { "FREEZE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> freezeAttach;
     juce::ComboBox categoryBox, presetBox, themeBox;
-    juce::TextButton prevButton { "<" }, nextButton { ">" };
+    juce::TextButton prevButton { "<" }, nextButton { ">" }, saveButton { "SAVE" }, pluginButton { "Load carrier plugin..." };
+    std::unique_ptr<juce::DocumentWindow> pluginWindow, scannerWindow;
+    std::unique_ptr<juce::AlertWindow> saveDialog;
+    juce::Array<juce::File> userFiles;
+    static constexpr int kUserCategoryId = 1000, kUserPresetIdBase = 2000;
     juce::MidiKeyboardComponent keyboard;
 
     std::array<float, mp::kDisplayBands> bars {};
